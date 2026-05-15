@@ -1,0 +1,57 @@
+# ==============================================================================
+# agent-nexus Docker Compose — LOCAL DEVELOPMENT ONLY
+# For production, deploy to Hugging Face Spaces (see SETUP_GUIDE.md)
+# ==============================================================================
+
+services:
+  # --- Main Application ---
+  agent-nexus:
+    build: .
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=development
+      - DB_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/agent_nexus
+      - VECTOR_URL=http://qdrant:6333
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - workspace_data:/tmp/agent-nexus-workspace
+    restart: unless-stopped
+
+  # --- PostgreSQL ---
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agent_nexus
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Qdrant Vector Database ---
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  workspace_data:

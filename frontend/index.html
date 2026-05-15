@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>agent-nexus | Multimodal Autonomous Agent</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <!-- Main Styles -->
+    <link rel="stylesheet" href="style.css">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="bg-gradient"></div>
+    <div class="bg-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="glass-panel header">
+            <div class="logo">
+                <i class="fa-solid fa-brain"></i>
+                <span>agent-nexus</span>
+            </div>
+            <div class="header-links">
+                <a href="/docs" target="_blank" class="glass-btn"><i class="fa-solid fa-book"></i> API Docs</a>
+                <a href="https://github.com/vaibhav-4-ai/agent-nexus" target="_blank" class="glass-btn primary"><i class="fa-brands fa-github"></i> GitHub</a>
+            </div>
+        </header>
+
+        <!-- Main Layout: 2 Columns -->
+        <main class="main-layout">
+            <!-- Left Column: Input and Info -->
+            <section class="left-col">
+                <div class="glass-panel intro-panel">
+                    <h1>Autonomous Multimodal AI</h1>
+                    <p>
+                        Give agent-nexus a high-level goal, and it will autonomously plan, execute tools, verify outcomes, and self-heal from errors.
+                    </p>
+                    <div class="features-grid">
+                        <div class="feature-chip"><i class="fa-solid fa-magnifying-glass"></i> Web Search</div>
+                        <div class="feature-chip"><i class="fa-solid fa-terminal"></i> Terminal Exec</div>
+                        <div class="feature-chip"><i class="fa-solid fa-file-code"></i> File System</div>
+                        <div class="feature-chip"><i class="fa-solid fa-database"></i> Database</div>
+                        <div class="feature-chip"><i class="fa-solid fa-eye"></i> Vision</div>
+                    </div>
+                </div>
+
+                <!-- Input Panel -->
+                <div class="glass-panel input-panel">
+                    <h2><i class="fa-solid fa-bolt"></i> New Task</h2>
+                    <form id="taskForm">
+                        <textarea id="goalInput" placeholder="What would you like the agent to do? e.g., 'Research latest AI trends and summarize'" rows="4" required></textarea>
+                        <button type="submit" class="submit-btn" id="submitBtn">
+                            <span>Execute Task</span>
+                            <i class="fa-solid fa-arrow-right"></i>
+                        </button>
+                    </form>
+                </div>
+                
+                <!-- Status Panel (Hidden initially) -->
+                <div class="glass-panel status-panel hidden" id="statusPanel">
+                    <div class="status-header">
+                        <h3>Status: <span id="taskStatus" class="status-badge running">Running</span></h3>
+                        <div class="loader" id="taskLoader"></div>
+                    </div>
+                    <div class="task-stats">
+                        <div class="stat-box">
+                            <span class="stat-value" id="stepsCompleted">0</span>
+                            <span class="stat-label">Steps</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-value" id="taskTime">0.0s</span>
+                            <span class="stat-label">Time</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Column: Terminal/Trace -->
+            <section class="right-col">
+                <div class="glass-panel terminal-panel">
+                    <div class="terminal-header">
+                        <div class="mac-btns">
+                            <span class="mac-btn close"></span>
+                            <span class="mac-btn minimize"></span>
+                            <span class="mac-btn expand"></span>
+                        </div>
+                        <div class="terminal-title">Execution Trace</div>
+                    </div>
+                    <div class="terminal-body" id="terminalBody">
+                        <div class="terminal-line system">Ready for input. Waiting for task...</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

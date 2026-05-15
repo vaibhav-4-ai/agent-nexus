@@ -1,0 +1,9 @@
+# Development configuration overrides
+app:
+  name: agent-nexus-dev
+
+llm:
+  temperature: 0.2  # Slightly higher for testing variety
+
+mcp:
+  browser_enabled: false  # Save RAM in dev

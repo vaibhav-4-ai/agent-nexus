@@ -1,0 +1,61 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Logs
+*.log
+
+# Docker volumes
+postgres_data/
+qdrant_data/
+
+# Model caches
+models/
+*.pt
+*.bin
+*.onnx
+
+# Agent Workspaces & Outputs
+workspace/
+agent-nexus-workspace/
+
+# Ad-hoc testing scripts
+test_*.py
+scratch.py
+
+# Planning artifacts
+walkthrough.md
+SETUP_GUIDE.md
+PROMPT_*.md

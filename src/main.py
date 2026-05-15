@@ -1,0 +1,207 @@
+"""
+FastAPI Application Entry Point.
+
+Wires together all components: database, Redis, vector store, MCP servers,
+orchestrator engine, and API routes.
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, AsyncIterator
+
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from src.config import get_settings
+from src.infra.logging import get_logger, setup_logging
+
+logger = get_logger("main")
+
+# Module-level singletons (initialized in lifespan)
+_orchestrator_engine: Any = None
+_mcp_registry: Any = None
+
+
+def get_orchestrator_engine() -> Any:
+    return _orchestrator_engine
+
+
+def get_mcp_registry() -> Any:
+    return _mcp_registry
+
+
+_prune_task: asyncio.Task | None = None
+
+async def _background_pruner() -> None:
+    """Runs continuously and prunes old DB data every 24 hours."""
+    from src.infra.db import prune_old_data
+    while True:
+        try:
+            # Sleep 24 hours (run once a day)
+            await asyncio.sleep(24 * 3600)
+            await prune_old_data(days_to_keep=3)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("background_pruner_error", error=str(e))
+            await asyncio.sleep(3600)  # Retry in 1 hour on error
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Application lifespan — startup and shutdown hooks."""
+    global _orchestrator_engine, _mcp_registry, _prune_task
+
+    settings = get_settings()
+    setup_logging(log_level=settings.log_level, json_format=settings.environment.value != "development")
+    logger.info("starting_agent_nexus", environment=settings.environment.value)
+
+    # --- Startup ---
+    # 1. Initialize database
+    try:
+        from src.infra.db import init_db
+        await init_db()
+        logger.info("database_ready")
+    except Exception as e:
+        logger.error("database_init_failed", error=str(e))
+
+    # 2. Initialize Redis
+    try:
+        from src.infra.redis_client import get_redis
+        await get_redis()
+        logger.info("redis_ready")
+    except Exception as e:
+        logger.warning("redis_init_failed", error=str(e))
+
+    # 3. Initialize Vector Store
+    try:
+        from src.infra.vector_store import get_vector_store
+        await get_vector_store()
+        logger.info("vector_store_ready")
+    except Exception as e:
+        logger.warning("vector_store_init_failed", error=str(e))
+
+    # 4. Initialize MCP servers
+    from src.mcp.client import MCPClient
+    from src.mcp.registry import ServerRegistry
+
+    _mcp_registry = ServerRegistry()
+    mcp_client = MCPClient(_mcp_registry)
+    await mcp_client.initialize_all_servers()
+    logger.info("mcp_servers_ready")
+
+    # 5. Initialize Event Bus
+    from src.infra.event_bus import get_event_bus
+    event_bus = get_event_bus()
+    await event_bus.start()
+
+    # 6. Initialize Metrics
+    from src.infra.metrics import get_metrics
+    await get_metrics()
+
+    # 7. Create Orchestrator Engine
+    from src.orchestrator.engine import OrchestratorEngine
+    _orchestrator_engine = OrchestratorEngine(mcp_client, event_bus)
+
+    # 8. Start Background DB Pruning Task
+    _prune_task = asyncio.create_task(_background_pruner())
+
+    logger.info("agent_nexus_ready", port=settings.api.port)
+
+    yield  # Application runs here
+
+    # --- Shutdown ---
+    logger.info("shutting_down_agent_nexus")
+
+    if _prune_task:
+        _prune_task.cancel()
+        try:
+            await _prune_task
+        except asyncio.CancelledError:
+            pass
+
+    await event_bus.stop()
+    await _mcp_registry.shutdown_all()
+
+    try:
+        from src.infra.redis_client import close_redis
+        await close_redis()
+    except Exception:
+        pass
+
+    try:
+        from src.infra.vector_store import close_vector_store
+        await close_vector_store()
+    except Exception:
+        pass
+
+    try:
+        from src.infra.db import close_db
+        await close_db()
+    except Exception:
+        pass
+
+    logger.info("agent_nexus_shutdown_complete")
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    settings = get_settings()
+
+    app = FastAPI(
+        title="agent-nexus",
+        description="Multimodal AI Agent that sees, hears, reads code, queries databases, "
+                    "and reasons across all modalities — with self-healing and grounded verification.",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+
+    # Apply middleware
+    from src.api.middleware import setup_middleware
+    setup_middleware(app)
+
+    # Mount API routes
+    from src.api.routes import router
+    app.include_router(router)
+
+    # Workspace files route (allows downloading files generated by the agent)
+    workspace_dir = Path(settings.mcp.workspace_dir)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/workspace", StaticFiles(directory=str(workspace_dir)), name="workspace")
+
+    # Frontend route
+    frontend_dir = Path(__file__).parent.parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+    else:
+        @app.get("/", response_class=HTMLResponse)
+        async def root() -> str:
+            return "<html><body><h1>agent-nexus API is running, but frontend was not found.</h1></body></html>"
+
+    return app
+
+
+# Create the app instance (used by uvicorn)
+app = create_app()
+
+
+def main() -> None:
+    """Run the application."""
+    settings = get_settings()
+    uvicorn.run(
+        "src.main:app",
+        host=settings.api.host,
+        port=settings.api.port,
+        reload=settings.api.debug,
+        log_level=settings.log_level.lower(),
+    )
+
+
+if __name__ == "__main__":
+    main()

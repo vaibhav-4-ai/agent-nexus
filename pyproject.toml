@@ -1,0 +1,142 @@
+[project]
+name = "agent-nexus"
+version = "1.0.0"
+description = "Multimodal AI Agent that sees, hears, reads code, queries databases, and reasons across all modalities — with self-healing and grounded verification."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12"
+authors = [{ name = "Vaibhav", email = "vaibhav-4-ai@users.noreply.github.com" }]
+keywords = ["ai-agent", "multimodal", "autonomous", "mcp", "self-healing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # --- Core Framework ---
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "python-multipart>=0.0.12",
+    "websockets>=13.0",
+
+    # --- LLM & AI ---
+    "litellm>=1.50.0",
+    "tiktoken>=0.8.0",
+    "sentence-transformers>=3.3.0",
+
+    # --- Database & Storage ---
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+
+    # --- Vector Database ---
+    "qdrant-client>=1.12.0",
+
+    # --- Cache ---
+    "upstash-redis>=1.1.0",
+
+    # --- MCP Servers ---
+    "httpx>=0.28.0",
+    "playwright>=1.49.0",
+    "duckduckgo-search>=7.0.0",
+
+    # --- Perception ---
+    "tree-sitter>=0.23.0",
+    "pymupdf>=1.25.0",
+    "python-docx>=1.1.0",
+
+    # --- Monitoring ---
+    "mlflow>=2.19.0",
+    "dagshub>=0.3.0",
+
+    # --- Logging & Observability ---
+    "structlog>=24.4.0",
+    "python-json-logger>=3.2.0",
+
+    # --- Rate Limiting & Security ---
+    "slowapi>=0.1.9",
+
+    # --- Utilities ---
+    "pyyaml>=6.0.2",
+    "python-dotenv>=1.0.1",
+    "tenacity>=9.0.0",
+    "aiofiles>=24.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+]
+local = [
+    # For running models locally (GPU required)
+    "torch>=2.5.0",
+    "transformers>=4.46.0",
+    "faster-whisper>=1.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/vaibhav-4-ai/agent-nexus"
+Documentation = "https://github.com/vaibhav-4-ai/agent-nexus/tree/main/docs"
+Repository = "https://github.com/vaibhav-4-ai/agent-nexus"
+Issues = "https://github.com/vaibhav-4-ai/agent-nexus/issues"
+
+[project.scripts]
+agent-nexus = "src.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific rules
+]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "unit: Unit tests (no external deps)",
+    "integration: Integration tests (requires services)",
+    "e2e: End-to-end tests (full orchestration)",
+]

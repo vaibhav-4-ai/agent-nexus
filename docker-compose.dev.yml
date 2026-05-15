@@ -1,0 +1,19 @@
+# Docker Compose overrides for development (hot reload, debug)
+services:
+  agent-nexus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7860", "--reload"]
+    volumes:
+      - ./src:/home/user/app/src:ro
+      - workspace_data:/tmp/agent-nexus-workspace
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - API_DEBUG=true
+    ports:
+      - "7860:7860"
+
+volumes:
+  workspace_data:

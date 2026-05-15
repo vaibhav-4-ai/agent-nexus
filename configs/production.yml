@@ -1,0 +1,11 @@
+# Production configuration (Hugging Face Spaces)
+app:
+  name: agent-nexus
+
+llm:
+  temperature: 0.1
+  max_retries: 3
+
+mcp:
+  browser_enabled: false  # Disabled on HF Spaces (RAM)
+  search_provider: duckduckgo
