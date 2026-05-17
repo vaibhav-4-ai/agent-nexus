@@ -1,5 +1,11 @@
 """
 Code Execution MCP Server — run Python/JS in isolated subprocesses.
+
+Security model (S7 fix):
+- Subprocess receives a CURATED env, not the full parent environment.
+- Removes all API keys / DB URLs / tokens / secrets from view of user code.
+- Preserves only PATH / LANG / locale / standard variables so common imports
+  (requests, json, etc.) still work.
 """
 
 from __future__ import annotations
@@ -12,6 +18,22 @@ from typing import Any
 from src.config import get_settings
 from src.mcp.protocol import Tool, ToolParameter, ToolResult
 from src.mcp.servers.base_server import BaseMCPServer
+
+
+# Whitelist of env var names that user code is allowed to see.
+# Any var NOT in this set is stripped (api keys, db urls, secrets, etc.).
+SAFE_ENV_KEYS = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM",
+    "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "PYTHONIOENCODING", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
+    "NODE_OPTIONS",
+    "TMPDIR", "TMP", "TEMP",
+})
+
+
+def _build_safe_env() -> dict[str, str]:
+    """Return a dict containing only the env vars in SAFE_ENV_KEYS."""
+    return {k: v for k, v in os.environ.items() if k in SAFE_ENV_KEYS}
 
 
 class CodeExecServer(BaseMCPServer):
@@ -67,6 +89,7 @@ class CodeExecServer(BaseMCPServer):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._workspace,
+                env=_build_safe_env(),  # S7: strip all secrets from view of user code
             )
             try:
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)

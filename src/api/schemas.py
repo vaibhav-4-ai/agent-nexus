@@ -5,9 +5,9 @@ Pydantic request/response schemas for the API.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 class AttachmentSchema(BaseModel):
@@ -15,10 +15,38 @@ class AttachmentSchema(BaseModel):
     url: str = Field(default="", description="URL or base64 data")
 
 
+class BYOKConfig(BaseModel):
+    """Per-request inference credential override.
+
+    When present on a TaskCreateRequest, the server routes that single task's
+    LLM calls through the supplied provider + model + key, bypassing the
+    server's default credentials. The key is never persisted server-side and
+    never written to logs (redaction + omission at call sites).
+    """
+    provider: Literal["groq", "openai", "anthropic", "gemini"] = Field(
+        description="Inference provider identifier."
+    )
+    model: str = Field(
+        description=("Fully qualified model identifier as accepted by LiteLLM, "
+                     "e.g. 'openai/gpt-4o-mini', 'anthropic/claude-3-5-haiku-latest', "
+                     "'gemini/gemini-1.5-flash'."),
+        min_length=1, max_length=200,
+    )
+    api_key: SecretStr = Field(
+        description="Provider API key. Scoped to this request only; never persisted.",
+        min_length=10, max_length=500,
+    )
+
+
 class TaskCreateRequest(BaseModel):
     goal: str = Field(description="Natural language goal for the agent")
     attachments: list[AttachmentSchema] = Field(default_factory=list)
     config: dict[str, Any] = Field(default_factory=dict, description="Optional task config overrides")
+    byok: BYOKConfig | None = Field(
+        default=None,
+        description="Optional per-request inference credentials (BYOK). When omitted, "
+                    "the server's configured credentials are used.",
+    )
 
 
 class TaskCreateResponse(BaseModel):

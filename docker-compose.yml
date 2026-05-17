@@ -1,6 +1,12 @@
 # ==============================================================================
 # agent-nexus Docker Compose — LOCAL DEVELOPMENT ONLY
 # For production, deploy to Hugging Face Spaces (see SETUP_GUIDE.md)
+#
+# Default usage (Groq/Gemini/OpenAI/Anthropic — bring your own API key):
+#   docker compose up -d
+#
+# Fully self-hosted (no API key needed — Ollama runs locally in a container):
+#   docker compose --profile local up -d
 # ==============================================================================
 
 services:
@@ -15,6 +21,8 @@ services:
       - ENVIRONMENT=development
       - DB_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/agent_nexus
       - VECTOR_URL=http://qdrant:6333
+      # When `--profile local` is active, point at the Ollama service
+      - OLLAMA_HOST=http://ollama:11434
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,7 +59,37 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
+  # --- Ollama (optional, opt-in via `--profile local`) ---
+  # Enables fully self-hosted operation with zero API keys.
+  # On first start, automatically pulls llama3.2:3b (~2 GB).
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    # Pull the small model on first start, then serve.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        SERVE_PID=$$!
+        # Wait for server, then pull model if missing
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama list | grep -q "llama3.2:3b" || ollama pull llama3.2:3b
+        wait $$SERVE_PID
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   qdrant_data:
   workspace_data:
+  ollama_data:

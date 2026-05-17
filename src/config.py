@@ -36,6 +36,7 @@ class LLMProviderType(str, enum.Enum):
     GROQ = "groq"
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
     OLLAMA = "ollama"
     VLLM = "vllm"
     HUGGINGFACE = "huggingface"
@@ -158,6 +159,7 @@ class LLMSettings(BaseSettings):
     groq_api_key: SecretStr = Field(default=SecretStr(""), alias="GROQ_API_KEY")
     openai_api_key: SecretStr = Field(default=SecretStr(""), alias="OPENAI_API_KEY")
     anthropic_api_key: SecretStr = Field(default=SecretStr(""), alias="ANTHROPIC_API_KEY")
+    gemini_api_key: SecretStr = Field(default=SecretStr(""), alias="GEMINI_API_KEY")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
 
 
@@ -205,6 +207,30 @@ class MonitoringSettings(BaseSettings):
         default=SecretStr(""),
         description="DagsHub API token for MLflow authentication.",
     )
+    alert_webhook_url: str = Field(
+        default="",
+        alias="ALERT_WEBHOOK_URL",
+        description="Optional webhook URL for quota/event notifications (Discord/Slack/ntfy.sh).",
+    )
+    quota_check_interval_s: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        description="How often (seconds) the QuotaManager runs auto-eviction checks.",
+    )
+    quota_qdrant_threshold_bytes: int = Field(
+        default=858_993_459,  # 80% of 1 GB
+        description="Trigger Qdrant auto-eviction above this byte count.",
+    )
+    quota_kg_row_threshold: int = Field(
+        default=8000,
+        description="Trigger knowledge_graph table auto-eviction above this row count.",
+    )
+    task_cleanup_cutoff_s: int = Field(
+        default=86400,  # 24 hours
+        ge=10,
+        description="Age (seconds) above which terminal in-memory task entries are evicted.",
+    )
 
 
 class APISettings(BaseSettings):
@@ -216,7 +242,10 @@ class APISettings(BaseSettings):
     port: int = Field(default=7860, description="API port (7860 for HF Spaces).")
     debug: bool = Field(default=False, description="Enable debug mode.")
     cors_origins: list[str] = Field(
-        default=["*"], description="Allowed CORS origins."
+        default=[],
+        description="Allowed CORS origins. Default empty = no cross-origin requests. "
+                    "Examples: ['https://your-frontend.example.com'] or ['*'] "
+                    "(wildcard forces allow_credentials=False per CORS spec).",
     )
     rate_limit: str = Field(
         default="60/minute",
@@ -224,7 +253,9 @@ class APISettings(BaseSettings):
     )
     api_key: SecretStr = Field(
         default=SecretStr(""),
-        description="Optional API key for authentication. Leave empty to disable.",
+        description="Bearer-style API key sent as X-API-Key header. REQUIRED when "
+                    "ENVIRONMENT=production (server returns 503 until configured). "
+                    "Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'.",
     )
 
 
@@ -276,6 +307,10 @@ class Settings(BaseSettings):
         if self.llm.anthropic_api_key.get_secret_value():
             os.environ.setdefault(
                 "ANTHROPIC_API_KEY", self.llm.anthropic_api_key.get_secret_value()
+            )
+        if self.llm.gemini_api_key.get_secret_value():
+            os.environ.setdefault(
+                "GEMINI_API_KEY", self.llm.gemini_api_key.get_secret_value()
             )
         if self.llm.ollama_host:
             os.environ.setdefault("OLLAMA_API_BASE", self.llm.ollama_host)

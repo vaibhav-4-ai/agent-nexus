@@ -9,12 +9,66 @@ task_id + duration_ms for request-scoped tracing.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from contextvars import ContextVar
 from typing import Any
 
 import structlog
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction
+# ---------------------------------------------------------------------------
+# Patterns that match common provider secrets. Listed in order — first match
+# wins. Each is anchored loosely (no \b) so they catch substrings inside
+# longer strings like LiteLLM stack traces.
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"gsk_[A-Za-z0-9]{30,}"),                     # Groq
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{30,}"),               # Anthropic (must precede sk-)
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),                   # OpenAI
+    re.compile(r"github_pat_[A-Za-z0-9_\-]{30,}"),           # GitHub fine-grained PAT
+    re.compile(r"gh[pousr]_[A-Za-z0-9_\-]{30,}"),            # GitHub classic / OAuth tokens
+    re.compile(r"AIza[A-Za-z0-9_\-]{30,}"),                  # Google / Gemini
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}"),        # Bearer headers
+    # env-var-style leaks like FOO_API_KEY=bar
+    re.compile(r"[A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)\s*=\s*[^\s,'\"]+"),
+)
+
+_REDACTED = "<REDACTED>"
+
+
+def redact_secrets(text: Any) -> Any:
+    """Replace any matched secret pattern with '<REDACTED>'.
+
+    Non-string inputs are returned unchanged. Idempotent — running on an
+    already-redacted string is a no-op for the matched patterns.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub(_REDACTED, out)
+    return out
+
+
+def _redact_event_dict(
+    logger: Any, method_name: str, event_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """Structlog processor: scan every value in the event dict for secrets.
+
+    Defense-in-depth — the call sites already truncate + redact (L3), but if
+    any code path slips a secret into a log via a kwarg or the event message
+    itself, this catches it.
+    """
+    for key, value in list(event_dict.items()):
+        if isinstance(value, str):
+            event_dict[key] = redact_secrets(value)
+        elif isinstance(value, dict):
+            event_dict[key] = {k: redact_secrets(v) if isinstance(v, str) else v
+                               for k, v in value.items()}
+    return event_dict
 
 # ---------------------------------------------------------------------------
 # Context variables for per-request tracing
@@ -75,7 +129,9 @@ def setup_logging(log_level: str = "INFO", json_format: bool = True) -> None:
         log_level: Minimum log level (DEBUG, INFO, WARNING, ERROR).
         json_format: If True, output JSON logs. If False, output colored console logs.
     """
-    # Shared processors for both structlog and stdlib
+    # Shared processors for both structlog and stdlib.
+    # Order matters: redaction runs LAST so it sees the final dict, including
+    # any values injected by upstream processors (stack frames, exception text).
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         _add_context_vars,
@@ -84,6 +140,7 @@ def setup_logging(log_level: str = "INFO", json_format: bool = True) -> None:
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
+        _redact_event_dict,  # L1: global secret-pattern scrubber
     ]
 
     if json_format:

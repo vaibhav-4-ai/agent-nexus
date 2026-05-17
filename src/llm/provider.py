@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, AsyncIterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, AsyncIterator, Iterator
 
 import litellm
 from tenacity import (
@@ -21,8 +23,42 @@ from tenacity import (
 )
 
 from src.config import get_settings
-from src.infra.logging import Timer, get_logger
+from src.infra.logging import Timer, get_logger, redact_secrets
 from src.infra.metrics import get_metrics
+
+# ---------------------------------------------------------------------------
+# Per-request BYOK override
+# ---------------------------------------------------------------------------
+# A task may supply its own provider + model + api_key (a "BYOK" override).
+# We thread it through via a ContextVar so individual call sites (planner,
+# executor, verifier, etc.) don't all need their function signatures changed.
+#
+# Lifecycle: engine.execute_task() opens `byok_override(...)` around its body;
+# inside that block, `get_byok()` returns the override dict; outside, it's None.
+_byok_ctx: ContextVar[dict[str, Any] | None] = ContextVar("byok_override", default=None)
+
+
+def get_byok() -> dict[str, Any] | None:
+    """Return the current request's BYOK override, or None if none set."""
+    return _byok_ctx.get()
+
+
+@contextmanager
+def byok_override(byok: dict[str, Any] | None) -> Iterator[None]:
+    """Context manager that activates a BYOK override for the duration of a block.
+
+    Args:
+        byok: dict with keys 'provider', 'model', 'api_key'. If None, this is
+              a no-op (server's default credentials are used).
+    """
+    if not byok:
+        yield
+        return
+    token = _byok_ctx.set(byok)
+    try:
+        yield
+    finally:
+        _byok_ctx.reset(token)
 
 logger = get_logger("llm.provider")
 
@@ -97,8 +133,18 @@ class LLMProvider:
             max_tokens: Override max tokens.
             json_mode: If True, request JSON output.
         """
-        model = model or (self._settings.fallback_model if self._using_fallback
-                          else self._settings.model)
+        # BYOK override (per-request): when active, use the user's model + key
+        # directly. Server-side singleton state (_using_fallback, _failure_count)
+        # is ignored so one user's BYOK call doesn't trip the server's circuit
+        # breaker, and one user's rate limit doesn't affect anyone else.
+        byok = get_byok()
+        if byok is not None:
+            model = byok["model"]
+            # api_key passed per-call so it never lands in os.environ
+            kwargs["api_key"] = byok["api_key"]
+        else:
+            model = model or (self._settings.fallback_model if self._using_fallback
+                              else self._settings.model)
         temperature = temperature if temperature is not None else self._settings.temperature
         max_tokens = max_tokens or self._settings.max_tokens
 
@@ -111,8 +157,14 @@ class LLMProvider:
             **kwargs,
         }
 
-        if json_mode:
-            call_kwargs["response_format"] = {"type": "json_object"}
+        # NOTE: We deliberately do NOT set response_format={"type":"json_object"}.
+        # Groq's server-side strict JSON validator rejects valid-but-loose JSON
+        # (e.g. plans with embedded Python code in `code` arguments), returning
+        # litellm.BadRequestError BEFORE the model's text reaches us — bypassing
+        # the planner's retry loop. The system prompts already instruct JSON
+        # output; structured_output.extract_json() + parse_llm_response() handle
+        # tolerant parsing, and the planner re-prompts on ValueError.
+        _ = json_mode  # parameter retained for caller-side compatibility
 
         metrics = await get_metrics()
         await metrics.increment("agent_llm_calls_total", labels={"provider": model.split("/")[0]})
@@ -211,22 +263,73 @@ class LLMProvider:
                     yield delta.content
 
         except Exception as e:
-            logger.error("llm_stream_failed", model=model, error=str(e))
+            logger.error("llm_stream_failed",
+                         model=model,
+                         error_type=type(e).__name__,
+                         error=redact_secrets(str(e))[:300])
             raise
 
     @retry(
-        retry=retry_if_exception_type((litellm.exceptions.RateLimitError, litellm.exceptions.ServiceUnavailableError)),
+        retry=retry_if_exception_type((litellm.exceptions.ServiceUnavailableError,)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=8),
         reraise=True,
     )
     async def _call_with_retry(self, kwargs: dict[str, Any]) -> Any:
-        """Make LLM call with automatic retry on rate limit / service errors."""
+        """Make LLM call with rate-limit failover + transient-error retry.
+
+        - ServiceUnavailableError: tenacity short-retries (transient outage).
+        - RateLimitError: swap to fallback_model once. Groq's free tier has
+          separate per-model TPD budgets, so the fallback usually has headroom
+          even when the primary is exhausted (8b has 5x the primary's daily
+          token budget — both free). 8-second exponential retry is useless for
+          daily-quota errors saying "wait 8 minutes."
+        """
         try:
             return await litellm.acompletion(**kwargs)
-        except (litellm.exceptions.RateLimitError, litellm.exceptions.ServiceUnavailableError):
-            raise  # Let tenacity retry these
+        except litellm.exceptions.RateLimitError as e:
+            current_model = kwargs.get("model", "")
+            fallback = self._settings.fallback_model
+            # L3-B: LiteLLM exception text can include the request URL with a
+            # key embedded. Redact + truncate before logging.
+            err_text = redact_secrets(str(e))[:300]
+            # BYOK calls (identified by per-call api_key in kwargs) propagate
+            # rate-limit errors directly. We don't trigger the server-side
+            # fallback model because that would attempt the user's fallback
+            # without their key, and would pollute the singleton's state.
+            if "api_key" in kwargs:
+                logger.warning("byok_rate_limit",
+                               model=current_model,
+                               error_type=type(e).__name__,
+                               error=err_text)
+                raise
+            if not self._using_fallback and fallback and fallback != current_model:
+                logger.warning(
+                    "llm_rate_limit_failover",
+                    primary=current_model,
+                    fallback=fallback,
+                    error_type=type(e).__name__,
+                    error=err_text,
+                )
+                self._using_fallback = True
+                fallback_kwargs = {**kwargs, "model": fallback}
+                return await litellm.acompletion(**fallback_kwargs)
+            logger.error("llm_rate_limit_fatal",
+                         model=current_model,
+                         error_type=type(e).__name__,
+                         error=err_text)
+            raise
+        except litellm.exceptions.ServiceUnavailableError:
+            raise  # let tenacity retry transient outages
         except Exception as e:
+            # BYOK call: don't touch the singleton's circuit-breaker state.
+            # The error belongs to the visitor's credentials, not ours.
+            if "api_key" in kwargs:
+                logger.warning("byok_call_failed",
+                               model=kwargs.get("model"),
+                               error_type=type(e).__name__,
+                               error=redact_secrets(str(e))[:300])
+                raise
             self._failure_count += 1
             if self._failure_count >= self._max_failures and not self._using_fallback:
                 logger.error(
@@ -235,7 +338,11 @@ class LLMProvider:
                     fallback_model=self._settings.fallback_model,
                 )
                 self._using_fallback = True
-            logger.error("llm_call_failed", error=str(e), failure_count=self._failure_count)
+            # L3-B: redact + truncate any embedded URL/key in the exception text.
+            logger.error("llm_call_failed",
+                         error_type=type(e).__name__,
+                         error=redact_secrets(str(e))[:300],
+                         failure_count=self._failure_count)
             raise
 
 

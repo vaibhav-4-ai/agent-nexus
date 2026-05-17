@@ -1,15 +1,81 @@
 """
 HTTP MCP Server — make HTTP requests and fetch web pages.
+
+Security model (S4 fix):
+- SSRF protection: every URL is validated by `_is_safe_url()` before dispatch.
+- Blocks: cloud metadata endpoints (169.254.169.254, metadata.google.internal,
+  metadata.azure.com), loopback (127.x), RFC1918 private (10/8, 172.16/12,
+  192.168/16), link-local (169.254/16), multicast, reserved.
+- Allowed schemes: http, https only.
 """
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
+from src.infra.logging import get_logger
 from src.mcp.protocol import Tool, ToolParameter, ToolResult
 from src.mcp.servers.base_server import BaseMCPServer
+
+logger = get_logger("mcp.http")
+
+# Hostnames that are always rejected regardless of DNS resolution
+BLOCKED_HOSTNAMES = frozenset({
+    "metadata", "metadata.google.internal", "metadata.azure.com",
+    "instance-data", "instance-data.ec2.internal",
+    "localhost",
+})
+# Hostname suffixes that are always rejected
+BLOCKED_HOSTNAME_SUFFIXES = (".local", ".internal", ".cluster.local")
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """Returns (safe, reason). reason is a short explanation on rejection."""
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        return False, f"unparseable url: {e}"
+    if parsed.scheme not in ("http", "https"):
+        return False, f"scheme '{parsed.scheme}' not allowed (only http/https)"
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return False, "empty hostname"
+    if hostname in BLOCKED_HOSTNAMES:
+        return False, f"hostname '{hostname}' is in deny list (cloud metadata / local)"
+    for suffix in BLOCKED_HOSTNAME_SUFFIXES:
+        if hostname.endswith(suffix):
+            return False, f"hostname suffix '{suffix}' blocked"
+    # IP literal check
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            return False, f"IP {ip} is private/loopback/link-local/multicast/reserved"
+        return True, ""
+    except ValueError:
+        pass  # Not a literal IP — must resolve via DNS
+    # DNS resolution check (catches hostnames that resolve to private IPs)
+    try:
+        # Only resolve A/AAAA records; skip if DNS is slow/unavailable
+        # (in that case the request will fail naturally on dispatch).
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+                if (ip.is_private or ip.is_loopback or ip.is_link_local
+                        or ip.is_multicast or ip.is_reserved):
+                    return False, f"host '{hostname}' resolves to private/loopback IP {ip}"
+            except ValueError:
+                continue
+    except (socket.gaierror, OSError):
+        pass  # DNS failed — let the actual request fail
+    return True, ""
 
 
 class HTTPServer(BaseMCPServer):
@@ -67,6 +133,12 @@ class HTTPServer(BaseMCPServer):
         headers = args.get("headers", {})
         body = args.get("body")
 
+        safe, reason = _is_safe_url(url)
+        if not safe:
+            logger.warning("http_ssrf_blocked", url=url, reason=reason)
+            return ToolResult(content="", is_error=True,
+                              error_message=f"URL rejected by SSRF filter: {reason}")
+
         try:
             response = await self._client.request(method, url, headers=headers, content=body)
             content_type = response.headers.get("content-type", "")
@@ -87,6 +159,11 @@ class HTTPServer(BaseMCPServer):
 
     async def _fetch_webpage(self, url: str) -> ToolResult:
         assert self._client is not None
+        safe, reason = _is_safe_url(url)
+        if not safe:
+            logger.warning("http_ssrf_blocked", url=url, reason=reason)
+            return ToolResult(content="", is_error=True,
+                              error_message=f"URL rejected by SSRF filter: {reason}")
         try:
             response = await self._client.get(url)
             # Simple HTML to text conversion

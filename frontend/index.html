@@ -31,6 +31,9 @@
             <div class="header-links">
                 <a href="/docs" target="_blank" class="glass-btn"><i class="fa-solid fa-book"></i> API Docs</a>
                 <a href="https://github.com/vaibhav-4-ai/agent-nexus" target="_blank" class="glass-btn primary"><i class="fa-brands fa-github"></i> GitHub</a>
+                <!-- CONTACT_EMAIL_LINK_START -->
+                <a href="mailto:vaibhavgoyal693@gmail.com" id="contact-email" class="glass-btn" style="display:inline-flex"><i class="fa-solid fa-envelope"></i> Contact</a>
+                <!-- CONTACT_EMAIL_LINK_END -->
             </div>
         </header>
 
@@ -57,6 +60,57 @@
                     <h2><i class="fa-solid fa-bolt"></i> New Task</h2>
                     <form id="taskForm">
                         <textarea id="goalInput" placeholder="What would you like the agent to do? e.g., 'Research latest AI trends and summarize'" rows="4" required></textarea>
+
+                        <!-- Inference settings (BYOK) -->
+                        <details class="inference-settings" id="inferenceSettings">
+                            <summary>
+                                <i class="fa-solid fa-sliders"></i>
+                                <span>Inference settings</span>
+                                <span class="inference-mode-badge" id="inferenceModeBadge">Server credentials</span>
+                            </summary>
+                            <div class="inference-body">
+                                <div class="radio-row">
+                                    <label class="radio-option">
+                                        <input type="radio" name="inferenceMode" value="server" checked>
+                                        <span class="radio-label">Use server credentials</span>
+                                        <span class="radio-hint">Default. Inference is routed through the Space's configured Groq key.</span>
+                                    </label>
+                                    <label class="radio-option">
+                                        <input type="radio" name="inferenceMode" value="byok">
+                                        <span class="radio-label">Use custom credentials</span>
+                                        <span class="radio-hint">Route this request through your own provider key. Credentials are scoped to this request and never persisted server-side.</span>
+                                    </label>
+                                </div>
+
+                                <div class="byok-fields" id="byokFields" hidden>
+                                    <div class="field">
+                                        <label for="byokProvider">Provider</label>
+                                        <select id="byokProvider">
+                                            <option value="openai">OpenAI</option>
+                                            <option value="anthropic">Anthropic</option>
+                                            <option value="gemini">Gemini</option>
+                                            <option value="groq">Groq</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="byokModel">Model</label>
+                                        <input type="text" id="byokModel" placeholder="openai/gpt-4o-mini" autocomplete="off">
+                                        <span class="field-hint" id="byokModelHint">Use the LiteLLM-canonical identifier for your chosen provider.</span>
+                                    </div>
+                                    <div class="field">
+                                        <label for="byokApiKey">API key</label>
+                                        <input type="password" id="byokApiKey" placeholder="sk-..." autocomplete="off" spellcheck="false">
+                                        <span class="field-hint">Credentials are sent only with this request and never written to server logs.</span>
+                                    </div>
+                                    <label class="checkbox-option">
+                                        <input type="checkbox" id="byokRemember">
+                                        <span>Remember on this device</span>
+                                        <span class="field-hint">Stores the configuration in your browser only (localStorage). Clear anytime by unchecking.</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </details>
+
                         <button type="submit" class="submit-btn" id="submitBtn">
                             <span>Execute Task</span>
                             <i class="fa-solid fa-arrow-right"></i>

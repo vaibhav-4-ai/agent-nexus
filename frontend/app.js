@@ -8,10 +8,106 @@ const taskTime = document.getElementById('taskTime');
 const terminalBody = document.getElementById('terminalBody');
 const taskLoader = document.getElementById('taskLoader');
 
+// Inference-settings (BYOK) panel
+const inferenceModeBadge = document.getElementById('inferenceModeBadge');
+const byokFields = document.getElementById('byokFields');
+const byokProvider = document.getElementById('byokProvider');
+const byokModel = document.getElementById('byokModel');
+const byokApiKey = document.getElementById('byokApiKey');
+const byokRemember = document.getElementById('byokRemember');
+
 let currentTaskId = null;
 let startTime = 0;
 let timerInterval = null;
 let ws = null;
+
+// ---------------------------------------------------------------------------
+// Inference settings (BYOK)
+// ---------------------------------------------------------------------------
+const BYOK_STORAGE_KEY = 'agent-nexus/byok-config';
+
+// Provider → suggested LiteLLM-canonical model id
+const BYOK_MODEL_DEFAULTS = {
+    openai: 'openai/gpt-4o-mini',
+    anthropic: 'anthropic/claude-3-5-haiku-latest',
+    gemini: 'gemini/gemini-1.5-flash',
+    groq: 'groq/llama-3.3-70b-versatile',
+};
+
+function getInferenceMode() {
+    const checked = document.querySelector('input[name="inferenceMode"]:checked');
+    return checked ? checked.value : 'server';
+}
+
+function updateInferenceUI() {
+    const mode = getInferenceMode();
+    if (mode === 'byok') {
+        byokFields.hidden = false;
+        inferenceModeBadge.textContent = 'Custom credentials';
+    } else {
+        byokFields.hidden = true;
+        inferenceModeBadge.textContent = 'Server credentials';
+    }
+}
+
+function suggestModelForProvider() {
+    const provider = byokProvider.value;
+    if (!byokModel.value || Object.values(BYOK_MODEL_DEFAULTS).includes(byokModel.value)) {
+        byokModel.value = BYOK_MODEL_DEFAULTS[provider] || '';
+    }
+    byokModel.placeholder = BYOK_MODEL_DEFAULTS[provider] || '';
+}
+
+function loadByokFromStorage() {
+    try {
+        const raw = localStorage.getItem(BYOK_STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (saved.provider) byokProvider.value = saved.provider;
+        if (saved.model) byokModel.value = saved.model;
+        if (saved.apiKey) byokApiKey.value = saved.apiKey;
+        if (saved.mode === 'byok') {
+            document.querySelector('input[name="inferenceMode"][value="byok"]').checked = true;
+        }
+        byokRemember.checked = true;
+        updateInferenceUI();
+    } catch (e) {
+        // Stored config is corrupted — clear it silently.
+        localStorage.removeItem(BYOK_STORAGE_KEY);
+    }
+}
+
+function persistByokIfRequested() {
+    if (byokRemember.checked && getInferenceMode() === 'byok') {
+        const payload = {
+            mode: 'byok',
+            provider: byokProvider.value,
+            model: byokModel.value,
+            apiKey: byokApiKey.value,  // localStorage only — never leaves the browser
+        };
+        localStorage.setItem(BYOK_STORAGE_KEY, JSON.stringify(payload));
+    } else {
+        localStorage.removeItem(BYOK_STORAGE_KEY);
+    }
+}
+
+function buildByokPayload() {
+    if (getInferenceMode() !== 'byok') return null;
+    const provider = byokProvider.value.trim();
+    const model = byokModel.value.trim();
+    const apiKey = byokApiKey.value.trim();
+    if (!provider || !model || !apiKey) {
+        throw new Error('Inference settings: provider, model, and API key are all required.');
+    }
+    return { provider, model, api_key: apiKey };
+}
+
+// Wire up panel events
+document.querySelectorAll('input[name="inferenceMode"]').forEach(el => {
+    el.addEventListener('change', updateInferenceUI);
+});
+if (byokProvider) byokProvider.addEventListener('change', suggestModelForProvider);
+loadByokFromStorage();
 
 function appendToTerminal(text, type = 'system') {
     const line = document.createElement('div');
@@ -168,14 +264,30 @@ form.addEventListener('submit', async (e) => {
     
     try {
         appendToTerminal('[System] Submitting task to Orchestrator Engine...', 'info');
-        
+
+        // Assemble request body, including BYOK override if the user opted in.
+        const body = { goal };
+        let byok = null;
+        try {
+            byok = buildByokPayload();
+        } catch (e) {
+            appendToTerminal(`[BYOK] ${e.message}`, 'error');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<span>Execute Task</span><i class="fa-solid fa-arrow-right"></i>';
+            stopTimer();
+            return;
+        }
+        if (byok) {
+            body.byok = byok;
+            appendToTerminal(`[BYOK] Routing this task through ${byok.provider} (${byok.model}). Credentials never leave your browser except to make this request.`, 'info');
+            persistByokIfRequested();
+        }
+
         // Use relative URL to work on both localhost and Hugging Face
         const response = await fetch('/api/v1/tasks', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ goal: goal })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
         });
         
         if (!response.ok) {

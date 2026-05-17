@@ -43,11 +43,13 @@ class EpisodicMemory:
 
         summary_text = "\n".join(summary_parts)
 
+        now = datetime.now(timezone.utc)
         metadata = {
             "task_id": record_id,
             "goal": task_record.get("goal", "")[:500],
             "status": task_record.get("status", "unknown"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": now.isoformat(),
+            "created_at": now.timestamp(),  # numeric for LRU eviction by QuotaManager
             "steps_count": task_record.get("steps_count", 0),
             "full_record": json.dumps(task_record, default=str)[:2000],
         }

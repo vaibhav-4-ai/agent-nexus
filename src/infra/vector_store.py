@@ -184,6 +184,62 @@ class VectorStore:
         info = await self._client.get_collection(collection)
         return info.points_count or 0
 
+    async def estimate_size_bytes(self, collection: str) -> int:
+        """Estimate the storage bytes used by a collection.
+
+        Qdrant doesn't expose raw bytes directly via the client; we approximate as
+        count * (vector_bytes + average_payload_bytes). For dim=384 + ~500B payload
+        that's ~2KB/vector, which is conservative for episodic memory entries.
+        """
+        n = await self.count(collection)
+        per_vector_bytes = self._dimension * 4 + 500
+        return n * per_vector_bytes
+
+    async def delete_oldest(self, collection: str, count_to_delete: int) -> int:
+        """Delete the oldest `count_to_delete` points in a collection, ordered by `created_at` payload.
+
+        Returns the number actually deleted. Points without a `created_at` payload
+        are treated as oldest (deleted first).
+        """
+        if count_to_delete <= 0:
+            return 0
+        from qdrant_client.http import models as qmodels
+
+        # Scroll through the entire collection collecting (id, created_at) tuples.
+        collected: list[tuple[Any, float]] = []
+        offset = None
+        batch_size = 1000
+        while True:
+            result = await self._client.scroll(
+                collection_name=collection,
+                limit=batch_size,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points, offset = result
+            for p in points:
+                ts = 0.0
+                if p.payload and "created_at" in p.payload:
+                    try:
+                        ts = float(p.payload["created_at"])
+                    except (TypeError, ValueError):
+                        ts = 0.0
+                collected.append((p.id, ts))
+            if offset is None or not points:
+                break
+
+        collected.sort(key=lambda t: t[1])
+        ids_to_delete = [t[0] for t in collected[:count_to_delete]]
+        if not ids_to_delete:
+            return 0
+        await self._client.delete(
+            collection_name=collection,
+            points_selector=qmodels.PointIdsList(points=ids_to_delete),
+        )
+        logger.info("vectors_lru_evicted", collection=collection, deleted=len(ids_to_delete))
+        return len(ids_to_delete)
+
     async def close(self) -> None:
         """Close the Qdrant client."""
         if self._client:

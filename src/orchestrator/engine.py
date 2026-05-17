@@ -53,9 +53,66 @@ class OrchestratorEngine:
         self._episodic = EpisodicMemory()
         self._graph = GraphMemory()
 
+    async def _persist_task_state(
+        self,
+        task_id: str,
+        *,
+        goal: str | None = None,
+        status: TaskStatus | None = None,
+        result: dict[str, Any] | None = None,
+        execution_trace: list[dict[str, Any]] | None = None,
+        error: str | None = None,
+        total_steps: int | None = None,
+        completed_steps: int | None = None,
+        total_duration_ms: float | None = None,
+    ) -> None:
+        """Best-effort persist task state to Postgres. Never raises — a DB hiccup must not kill the task."""
+        try:
+            from datetime import datetime, timezone
+            from src.infra.db import _get_session_factory, TaskRepository
+            from src.infra.db import TaskModel as _TaskModel
+            factory = _get_session_factory()
+            async with factory() as session:
+                repo = TaskRepository(session)
+                existing = await repo.get(task_id)
+                if existing is None:
+                    task = _TaskModel(id=task_id, goal=goal or "")
+                    session.add(task)
+                    target = task
+                else:
+                    target = existing
+                if status is not None:
+                    target.status = status.value
+                    if status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                        target.completed_at = datetime.now(timezone.utc)
+                if execution_trace is not None:
+                    target.execution_trace = execution_trace
+                if result is not None:
+                    target.result = result
+                if error is not None:
+                    target.error = error
+                if total_steps is not None:
+                    target.total_steps = total_steps
+                if completed_steps is not None:
+                    target.completed_steps = completed_steps
+                if total_duration_ms is not None:
+                    target.total_duration_ms = total_duration_ms
+                await session.commit()
+        except Exception as e:
+            logger.warning("task_db_persist_failed", task_id=task_id, error=str(e))
+
     async def execute_task(self, task_id: str, goal: str,
-                            attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        """Execute a complete task from goal to result."""
+                            attachments: list[dict[str, Any]] | None = None,
+                            byok: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute a complete task from goal to result.
+
+        Args:
+            byok: Optional per-request inference credentials. When provided,
+                  every LLM call inside this task uses the supplied
+                  provider/model/api_key instead of the server's defaults.
+                  The override is active only for the duration of this call
+                  via the byok_override ContextVar.
+        """
         bind_task_context(task_id)
         start_time = time.perf_counter()
         metrics = await get_metrics()
@@ -64,9 +121,16 @@ class OrchestratorEngine:
         memory_router = MemoryRouter(cag, self._rag, self._episodic, self._graph)
         execution_trace: list[dict[str, Any]] = []
 
+        # Activate BYOK for the entire task body via ContextVar set/reset.
+        # When byok is None, set(None) is a harmless no-op that we still
+        # reset at the end (preserves cleanliness if a parent task had one).
+        from src.llm.provider import _byok_ctx
+        _byok_token = _byok_ctx.set(byok)
+
         try:
             # === 1. Parse Goal ===
             state.transition(TaskStatus.PARSING)
+            await self._persist_task_state(task_id, goal=goal, status=TaskStatus.PARSING)
             await self._event_bus.emit(EventType.TASK_STARTED, {"goal": goal}, task_id)
             parsed_goal = await self._goal_parser.parse(goal, attachments)
             cag.update("system", f"Goal parsed: {parsed_goal.objective}")
@@ -76,6 +140,7 @@ class OrchestratorEngine:
 
             # === 3. Create Plan ===
             state.transition(TaskStatus.PLANNING)
+            await self._persist_task_state(task_id, status=TaskStatus.PLANNING)
             plan = await self._planner.create_plan(
                 parsed_goal,
                 available_tools=self._mcp.get_tools_display(),
@@ -86,6 +151,9 @@ class OrchestratorEngine:
 
             # === 4. Execute Plan Steps ===
             state.transition(TaskStatus.EXECUTING)
+            await self._persist_task_state(
+                task_id, status=TaskStatus.EXECUTING, total_steps=len(plan.steps),
+            )
             completed_steps = 0
 
             for step in plan.steps:
@@ -202,7 +270,7 @@ class OrchestratorEngine:
                 EventType.TASK_COMPLETED, {"status": status.value, "duration_ms": duration_ms}, task_id
             )
 
-            return {
+            final_result = {
                 "task_id": task_id,
                 "status": status.value,
                 "goal": goal,
@@ -212,6 +280,16 @@ class OrchestratorEngine:
                 "execution_trace": execution_trace,
                 "duration_ms": round(duration_ms, 2),
             }
+            await self._persist_task_state(
+                task_id,
+                status=status,
+                execution_trace=execution_trace,
+                result=final_result,
+                total_steps=len(plan.steps),
+                completed_steps=completed_steps,
+                total_duration_ms=duration_ms,
+            )
+            return final_result
 
         except Exception as e:
             import traceback
@@ -222,6 +300,14 @@ class OrchestratorEngine:
             await self._event_bus.emit(
                 EventType.TASK_FAILED, {"error": str(e)}, task_id
             )
+            await self._persist_task_state(
+                task_id,
+                goal=goal,
+                status=TaskStatus.FAILED,
+                error=str(e),
+                execution_trace=execution_trace,
+                total_duration_ms=duration_ms,
+            )
             return {
                 "task_id": task_id,
                 "status": "failed",
@@ -229,3 +315,8 @@ class OrchestratorEngine:
                 "execution_trace": execution_trace,
                 "duration_ms": round(duration_ms, 2),
             }
+        finally:
+            # Always clear the BYOK override so the next task starts clean,
+            # even if this task raised (the broad try/except above catches
+            # everything but it's still good hygiene to reset in finally).
+            _byok_ctx.reset(_byok_token)

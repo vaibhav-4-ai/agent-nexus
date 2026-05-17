@@ -5,7 +5,10 @@ description = "Multimodal AI Agent that sees, hears, reads code, queries databas
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
-authors = [{ name = "Vaibhav", email = "vaibhav-4-ai@users.noreply.github.com" }]
+# NOTE: `email` below is the single source of truth for the project contact.
+# After editing, run `python scripts/sync_contact.py` to propagate the value
+# into README.md and frontend/index.html.
+authors = [{ name = "Vaibhav", email = "vaibhavgoyal693@gmail.com" }]
 keywords = ["ai-agent", "multimodal", "autonomous", "mcp", "self-healing"]
 classifiers = [
     "Development Status :: 4 - Beta",
