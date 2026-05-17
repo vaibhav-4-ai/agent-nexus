@@ -1,3 +1,14 @@
+---
+title: Agent Nexus
+emoji: 🧠
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Self-healing AI agent — plans, executes tools, verifies outcomes, recovers from failures
+---
+
 <div align="center">
 
 # 🧠 agent-nexus
