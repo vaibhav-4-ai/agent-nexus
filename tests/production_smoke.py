@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1132,6 +1133,56 @@ async def _wait_for_health(client: httpx.AsyncClient, max_wait_s: int = 120) -> 
     return False
 
 
+# ---------------------------------------------------------------------------
+# Rate-limit auto-retry (opt-in via --retry-on-ratelimit)
+# ---------------------------------------------------------------------------
+# Matches both "Please try again in 4.29s" and "Please try again in 670ms"
+_RATELIMIT_RETRY_PAT = re.compile(
+    r"Please try again in ([\d.]+)\s*(ms|s)\b", re.IGNORECASE
+)
+
+
+def _extract_ratelimit_retry_seconds(results_slice: list[dict[str, Any]]) -> float | None:
+    """Scan a slice of result records for a RateLimitError's 'try again' hint.
+    Returns the longest wait time found (in seconds), or None if no rate-limit FAIL.
+    """
+    longest: float | None = None
+    for r in results_slice:
+        if r.get("status") != "FAIL":
+            continue
+        text = (r.get("detail") or "") + " " + (r.get("name") or "")
+        if "RateLimitError" not in text and "rate_limit_exceeded" not in text:
+            continue
+        m = _RATELIMIT_RETRY_PAT.search(text)
+        if not m:
+            continue
+        value = float(m.group(1))
+        unit = m.group(2).lower()
+        secs = value / 1000.0 if unit == "ms" else value
+        longest = secs if longest is None else max(longest, secs)
+    return longest
+
+
+async def _maybe_retry(args: argparse.Namespace, section_fn: Any, *fn_args: Any) -> None:
+    """Run a section once. If --retry-on-ratelimit is set and the section produced
+    a RateLimitError FAIL, sleep for the suggested retry duration (plus a 2s buffer),
+    discard the original FAIL entries, and re-run the section once. Max 2 attempts.
+    """
+    start_idx = len(results)
+    await section_fn(*fn_args)
+    if not args.retry_on_ratelimit:
+        return
+    retry_secs = _extract_ratelimit_retry_seconds(results[start_idx:])
+    if retry_secs is None:
+        return
+    wait = retry_secs + 2.0  # buffer past the provider's hint
+    print(f"  {YELLOW}…rate-limit hit; sleeping {wait:.1f}s then retrying section{RESET}")
+    # Discard the original attempt's entries so the retry's result replaces them
+    del results[start_idx:]
+    await asyncio.sleep(wait)
+    await section_fn(*fn_args)
+
+
 async def _pace(args: argparse.Namespace, label: str) -> None:
     """Sleep between LLM-heavy sections if --pace > 0. Helps stay under
     per-minute TPM on free-tier LLM providers."""
@@ -1144,43 +1195,43 @@ async def _run_all_sections(client: httpx.AsyncClient, args: argparse.Namespace,
                              phase_label: str) -> None:
     """Run sections 1-18 + T20 + (T19 if disruptive). Tag every result with phase_label."""
     start_idx = len(results)
-    await section_1_health(client)
-    await section_2_mcp_servers(client)
-    await section_3_llm_smoke(client)
+    await _maybe_retry(args, section_1_health, client)
+    await _maybe_retry(args, section_2_mcp_servers, client)
+    await _maybe_retry(args, section_3_llm_smoke, client)
     await _pace(args, "T4")
-    await section_4_filesystem(client)
+    await _maybe_retry(args, section_4_filesystem, client)
     await _pace(args, "T5")
-    await section_5_shell_safe(client)
+    await _maybe_retry(args, section_5_shell_safe, client)
     await _pace(args, "T6")
-    await section_6_shell_blocked(client)
+    await _maybe_retry(args, section_6_shell_blocked, client)
     await _pace(args, "T7-T8")
     if args.skip_network:
         report("7-HTTP", "GET httpbin.org/get", "SKIP", detail="--skip-network", ms=0)
         report("8-Search", "web search task", "SKIP", detail="--skip-network", ms=0)
     else:
-        await section_7_http(client)
+        await _maybe_retry(args, section_7_http, client)
         await _pace(args, "T8")
-        await section_8_search(client)
+        await _maybe_retry(args, section_8_search, client)
     await _pace(args, "T9")
-    await section_9_code_exec(client)
+    await _maybe_retry(args, section_9_code_exec, client)
     await _pace(args, "T10")
-    await section_10_concurrency(client)
-    await section_11_db_persistence(client)
-    await section_12_failure_recovery(client)
-    await section_13_health_llm_component(client)
-    await section_14_byok_wiring(client)
-    await section_15_no_key_state(client)
-    await section_16_task_db_persistence(client)
-    await section_17_stale_task_404(client)
-    await section_18_quota_manager_alive(client)
-    await section_20_websocket(client)
-    await section_21_redis(client)
-    await section_22_vector_store(client)
-    await section_23_openai_byok(client)
-    await section_24_anthropic_byok(client)
-    await section_25_mlflow(client)
+    await _maybe_retry(args, section_10_concurrency, client)
+    await _maybe_retry(args, section_11_db_persistence, client)
+    await _maybe_retry(args, section_12_failure_recovery, client)
+    await _maybe_retry(args, section_13_health_llm_component, client)
+    await _maybe_retry(args, section_14_byok_wiring, client)
+    await _maybe_retry(args, section_15_no_key_state, client)
+    await _maybe_retry(args, section_16_task_db_persistence, client)
+    await _maybe_retry(args, section_17_stale_task_404, client)
+    await _maybe_retry(args, section_18_quota_manager_alive, client)
+    await _maybe_retry(args, section_20_websocket, client)
+    await _maybe_retry(args, section_21_redis, client)
+    await _maybe_retry(args, section_22_vector_store, client)
+    await _maybe_retry(args, section_23_openai_byok, client)
+    await _maybe_retry(args, section_24_anthropic_byok, client)
+    await _maybe_retry(args, section_25_mlflow, client)
     if args.include_disruptive:
-        await section_19_restart_recovery(client)
+        await _maybe_retry(args, section_19_restart_recovery, client)
     else:
         report("19-Restart", "restart recovery", "SKIP",
                detail="pass --include-disruptive to run (restarts the container)",
@@ -1214,6 +1265,11 @@ async def main() -> None:
                              "stay under per-minute TPM limits on free-tier LLM providers. "
                              "Recommended: --pace 12 for Groq free tier (6K TPM on 8b model). "
                              "Default 0 (no pacing, fastest run).")
+    parser.add_argument("--retry-on-ratelimit", action="store_true",
+                        help="If a section fails with an LLM RateLimitError, parse the "
+                             "'try again in Xs' hint from the error and re-attempt that "
+                             "section once after the wait. Discards the first FAIL entry "
+                             "and keeps the retry's result (max 2 attempts per section).")
     parser.add_argument("--dual-model", action="store_true",
                         help="Run ALL tests twice — once with LLM_MODEL (primary), then "
                              "swap LLM_MODEL to LLM_FALLBACK_MODEL in .env, docker compose "

@@ -60,3 +60,5 @@ walkthrough.md
 SETUP_GUIDE.md
 PROMPT_*.md
 DEPLOYMENT.md
+tests/production_smoke_report.json
+logs.md
